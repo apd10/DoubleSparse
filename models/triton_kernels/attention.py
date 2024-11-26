@@ -11,9 +11,9 @@ from heavy import get_heavy
 from bgemv import bgemv
 from bgemv_int8 import bgemv_int8
 
+att = None
 
-def att(Q, K, V, Out, q_label, k_label, label_scores, channel, heavy_const, heavy_channel_num, label_mask, attn_mask):
-
+def ds_att(Q, K, V, Out, q_label, k_label, label_scores, channel, heavy_const, heavy_channel_num, label_mask, attn_mask):
     get_label_tensor(Q, channel, q_label, heavy_channel_num)
 
     # get_label_tensor(K, channel, k_label, heavy_channel_num)
@@ -25,7 +25,6 @@ def att(Q, K, V, Out, q_label, k_label, label_scores, channel, heavy_const, heav
     # assert torch.allclose(tmp_scores, label_scores, atol=1e-4, rtol=0)
 
     _, label_index = torch.topk(tmp_scores, heavy_const, dim=-1)
-
     fwd_sparse(Q, K, V, Out, label_index, attn_mask)
 
     return Out
@@ -205,15 +204,16 @@ if __name__ == '__main__':
     bsz = int(sys.argv[1])
     ctx = int(sys.argv[2])
 
-    sparsity_level = 16
+    sparsity_level = 32
     h = 32
     d = 128
 
 
     # times = []
-
-    att = torch.compile(att, fullgraph=True) # mode limited
-    print(f"bsz: {bsz}, ctx: {ctx}, time: {test_att(bsz, ctx, h, d, d // sparsity_level, ctx // sparsity_level)}")
+    
+    for att in [ds_att]:
+      att = torch.compile(att, fullgraph=True) # mode limited
+      print(f"bsz: {bsz}, ctx: {ctx}, time: {test_att(bsz, ctx, h, d, d // sparsity_level, ctx // sparsity_level)}")
 
 
     # for b in bszs:
