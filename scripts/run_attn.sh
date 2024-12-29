@@ -7,6 +7,6 @@ ctxs=(16384 32768 65536 131072)
 
 for bsz in "${bszs[@]}"; do
     for ctx in "${ctxs[@]}"; do
-        python3 ../models/triton_kernels/attention.py $bsz $ctx
+        python3 ../models/triton_kernels/torchatt.py $bsz $ctx
     done
 done

@@ -10,7 +10,8 @@ from sparse import fwd_sparse, torch_fwd_sparse
 from heavy import get_heavy
 from bgemv import bgemv
 from bgemv_int8 import bgemv_int8
-from transformers.modeling_flash_attention_utils import _flash_attention_forward
+# from transformers.modeling_flash_attention_utils import _flash_attention_forward
+from bit_count_long import gpu_bit_count_long
 import torch.nn as nn
 from torch.nn.functional import silu,relu
 from torch import matmul, sign
@@ -31,17 +32,21 @@ def torch_attention_naive(query_states, key_states, value_states, out, attention
     attn_output = attn_output.transpose(1, 2).contiguous()
     return attn_output
 
-def usa_attention(query_states, key_states, value_states, out, attention_mask, usa_module, usa_biases, key_label, query_label_states, topk, power):
+def usa_attention(query_states, key_states, value_states, out, attention_mask, usa_module, usa_biases, key_label, query_label_states, topk, power, match, count):
     # assert q == 1
     #q.shape = a,1,d
     query_label = relu(sign(matmul(silu(matmul(silu(matmul(query_label_states, usa_module[0]) + usa_biases[0]), usa_module[1]) + usa_biases[1]), usa_module[2]) + usa_biases[2])).long() # H, B, D
     query_label = torch.sum(query_label * power, dim=-1).long() # H,B,32 #TODO use 32 bits uint32 in final cuda kernel 
     #key_label : b,a,k,1
-    match = torch.bitwise_not(torch.bitwise_xor(query_label.unsqueeze(-1), key_label)) # # b,a,k,1
+    match = torch.bitwise_not(torch.bitwise_xor(query_label.unsqueeze(-1), key_label), out=match) # # b,a,k,1
+
+    # count = match
+    # count = torch.empty_like(match)
+    gpu_bit_count_long(match, count)
 
     # TODO run additional bitcount on match. Can be done in a fused kernel implementaiton later using _popc/_popcll  https://docs.nvidia.com/cuda/cuda-math-api/cuda_math_api/group__CUDA__MATH__INTRINSIC__INT.html
 
-    _, indices = torch.topk(match, topk, dim=-1)
+    _, indices = torch.topk(count, topk, dim=-1)
     indices = indices.transpose(0,1).contiguous()
     #print(query_states.shape, key_states.shape, value_states.shape, out.shape, indices.shape, attention_mask.shape)
     fwd_sparse(query_states, key_states, value_states, out, indices, attention_mask)
@@ -91,7 +96,7 @@ def usa_attention_profile(query_states, key_states, value_states, out, attention
 
      
 torch_attention_naive = torch.compile(torch_attention_naive, fullgraph=True)
-usa_attention = torch.compile(usa_attention, fullgraph=True)
+# usa_attention = torch.compile(usa_attention, fullgraph=True)
 def test_torch_att(B, N_CTX, H, D):
     import time
     print(f"B: {B}, N_CTX: {N_CTX}, H: {H}, D: {D}")
@@ -134,6 +139,8 @@ def test_usa_att(B, N_CTX, H, D, HEAVY_CONST):
                   torch.empty(H,1,D, dtype=dtype).normal_(mean=0, std=0.1).cuda(),
                   torch.empty(H,1,32, dtype=dtype).normal_(mean=0, std=0.1).cuda()]
     power = 2**torch.arange(32).long().reshape(1,1,32).cuda()
+    torch_match = torch.empty((H, B, N_CTX), dtype=torch.int64, device='cuda')
+    torch_count = torch.empty((H, B, N_CTX), dtype=torch.int64, device='cuda')
 
     #key_labels = torch.randint(2**32, (H,B, N_CTX), device='cuda', dtype=torch.int64) 
     # generated via MLP transformation given below 
@@ -145,13 +152,13 @@ def test_usa_att(B, N_CTX, H, D, HEAVY_CONST):
     attention_mask = torch.zeros((B, HEAVY_CONST), dtype=dtype, device="cuda")
     # Warm up
     for i in range(10):
-        usa_attention(q, k, v, out, attention_mask, usa_module, usa_biases, key_labels, query_label_states, HEAVY_CONST, power)
+        usa_attention(q, k, v, out, attention_mask, usa_module, usa_biases, key_labels, query_label_states, HEAVY_CONST, power, torch_match, torch_count)
 
     
     torch.cuda.synchronize()
     t1 = time.time()
     for i in range(0, run_iter):
-        usa_attention(q, k, v, out, attention_mask, usa_module, usa_biases, key_labels, query_label_states, HEAVY_CONST, power)
+        usa_attention(q, k, v, out, attention_mask, usa_module, usa_biases, key_labels, query_label_states, HEAVY_CONST, power, torch_match, torch_count)
     torch.cuda.synchronize()
     t2 = time.time()
     print("Time cost {}".format((t2 - t1) / run_iter))
