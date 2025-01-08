@@ -10,6 +10,7 @@ from sparse import fwd_sparse, torch_fwd_sparse
 from heavy import get_heavy
 from bgemv import bgemv
 from bgemv_int8 import bgemv_int8
+from flash_fwd_sparse import flash_fwd_sparse
 
 att = None
 
@@ -211,7 +212,7 @@ if __name__ == '__main__':
 
     # times = []
     
-    for att in [ds_att]:
+    for att in [ds_att, torch_att]:
       att = torch.compile(att, fullgraph=True) # mode limited
       print(f"bsz: {bsz}, ctx: {ctx}, time: {test_att(bsz, ctx, h, d, d // sparsity_level, ctx // sparsity_level)}")
 
